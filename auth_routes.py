@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 SECRET_KEY = "qook_chatbot_secret_key_2024"
 ALGORITHM = "HS256"
 
-_RUNTIME_SALT = os.environ.get("QOOK_INSTANCE_SALT") or uuid4().hex
+_RUNTIME_SALT = os.environ.get("QOOK_INSTANCE_SALT") or "stable_default_salt_2024_v1"
 
 def _runtime_secret() -> str:
     return f"{SECRET_KEY}:{_RUNTIME_SALT}"
@@ -72,6 +72,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
         expire = datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, _runtime_secret(), algorithm=ALGORITHM)
+    # Ensure token is always returned as string for consistency
+    if isinstance(encoded_jwt, bytes):
+        encoded_jwt = encoded_jwt.decode('utf-8')
     return encoded_jwt
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -294,6 +297,11 @@ async def login(user_login: UserLogin, response: Response, request: Request):
             except Exception as e:
                 logger.warning(f"login audit 실패: {e}")
 
+            # Clear any existing cookies first to prevent salt change issues
+            response.delete_cookie(key="access_token")
+            response.delete_cookie(key="user_id")
+
+            # Set new cookies with fresh tokens
             response.set_cookie(
                 key="access_token",
                 value=f"Bearer {access_token}",

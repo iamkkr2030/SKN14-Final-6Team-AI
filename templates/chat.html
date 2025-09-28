@@ -428,13 +428,20 @@
             fetch('/api/profile/get', { credentials:'include' })
               .then(function(r){ return r.json(); })
               .then(function(d){
-                  var tier = (d && d.user && d.user.membership) ? d.user.membership : null;
+                  // FIX: Check success first to prevent crashes
+                  if (!d || !d.success || !d.user) {
+                      console.log('Profile API failed or user not found');
+                      return;
+                  }
+                  var tier = d.user.membership || null;
                   if (!tier) return;
                   var chatBadge = document.getElementById('membershipBadge');
                   var myBadge = document.getElementById('mypageMembershipBadge');
                   if (chatBadge) chatBadge.innerHTML = badgeHtml(tier);
                   if (myBadge) myBadge.innerHTML = badgeHtml(tier);
-              }).catch(function(){});
+              }).catch(function(err){
+                  console.log('Profile API error:', err);
+              });
         })();
     </script>
     <script src="/static/js/chat.js"></script>

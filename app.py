@@ -143,9 +143,12 @@ def _josa_eul_reul(word: str) -> str:
         return "을" if jong != 0 else "를"
     return "을"
 
-async def get_current_user(request: Request):
+async def get_current_user(request: Request, response=None):
     """쿠키의 access_token을 직접 검증하여 현재 사용자 ID를 반환합니다.
     런타임 솔트를 사용하므로 프로세스 재시작 시 기존 토큰은 무효화됩니다.
+
+    JWT 토큰 검증 실패 시 (예: salt 변경으로 인한 기존 토큰 무효화)
+    쿠키를 자동으로 정리하여 리다이렉트 루프를 방지합니다.
     """
     try:
         import jwt
@@ -158,19 +161,28 @@ async def get_current_user(request: Request):
             uid = payload.get("sub")
             if uid:
                 return uid
-    except Exception:
-        pass
+    except Exception as e:
+        # JWT 검증 실패 시 (salt 변경, 만료된 토큰 등) 쿠키 정리
+        if token and response:
+            logger.info(f"Clearing invalid authentication cookies due to: {e}")
+            response.delete_cookie(key="access_token")
+            response.delete_cookie(key="user_id")
     return None
 
-async def require_login_for_page(request: Request):
-    """페이지 진입용: 비로그인 시 로그인 페이지로 리다이렉트"""
-    user = await get_current_user(request)
+async def require_login_for_page(request: Request, response=None):
+    """페이지 진입용: 비로그인 시 로그인 페이지로 리다이렉트
+
+    무효한 쿠키가 있을 경우 자동으로 정리한 후 로그인 페이지로 리다이렉트합니다.
+    """
+    redirect_response = RedirectResponse(url=f"/login?next={request.url.path}", status_code=303)
+    user = await get_current_user(request, redirect_response)
     if not user:
-        return RedirectResponse(url=f"/login?next={request.url.path}", status_code=303)
+        return redirect_response
     return user
 
-async def require_login_for_api(request: Request):
-    user = await get_current_user(request)
+async def require_login_for_api(request: Request, response=None):
+    """API 진입용: 비로그인 시 401 에러 반환"""
+    user = await get_current_user(request, response)
     if not user:
         raise HTTPException(status_code=401, detail="Login required")
     return user
@@ -186,17 +198,28 @@ async def get_landing_page(request: Request):
 
 @app.get("/chat", response_class=HTMLResponse)
 async def get_chat_page(request: Request):
-    current_user = await get_current_user(request)
-    
+    """채팅 페이지 - 로그인 필수"""
+    # Create redirect response to pass to get_current_user for cookie clearing
+    redirect_response = RedirectResponse(url=f"/login?next=/chat", status_code=303)
+    current_user = await get_current_user(request, redirect_response)
+
     if not current_user:
-        return RedirectResponse(url=f"/login?next=/chat", status_code=303)
-    
+        return redirect_response
+
     display_name = None
     try:
         if current_user:
             display_name = _get_user_display_name(current_user) or str(current_user)
     except Exception:
         display_name = str(current_user)
+
+    # Add validation: if display_name is still None, force re-login with cookie clearing
+    if display_name is None or display_name == "None":
+        session_expired_redirect = RedirectResponse(url=f"/login?next=/chat&reason=session_expired", status_code=303)
+        session_expired_redirect.delete_cookie(key="access_token")
+        session_expired_redirect.delete_cookie(key="user_id")
+        return session_expired_redirect
+
     return templates.TemplateResponse("chat.html", {
         "request": request,
         "current_user": current_user,
@@ -565,9 +588,10 @@ async def get_membership_page(request: Request):
     return templates.TemplateResponse("auth/membership.html", {"request": request, "current_user": current_user})
 
 @app.get("/auth/status")
-async def get_auth_status(request: Request):
+async def get_auth_status(request: Request, response: JSONResponse = JSONResponse(content={})):
+    """인증 상태 확인 API - 무효한 쿠키 자동 정리"""
     try:
-        current_user = await get_current_user(request)
+        current_user = await get_current_user(request, response)
         return {
             "authenticated": current_user is not None,
             "user_id": current_user
